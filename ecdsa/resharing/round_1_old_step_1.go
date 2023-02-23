@@ -36,7 +36,7 @@ func (round *round1) Start() *tss.Error {
 	if !round.ReSharingParams().IsOldCommittee() {
 		return nil
 	}
-	round.allOldOK()
+	// round.allOldOK()
 
 	Pi := round.PartyID()
 	i := Pi.Index
@@ -49,13 +49,13 @@ func (round *round1) Start() *tss.Error {
 	newKs := round.NewParties().IDs().Keys()
 	wi, _, _ := signing.PrepareForSigning(round.Params().EC(), i, len(round.OldParties().IDs()), xi, ks, bigXj)
 
-	// 2.
+	// 2. Compute FeldmanVSS() -> [Vs: 0 - T_new], [s: 1 - N_new]
 	vi, shares, err := vss.Create(round.Params().EC(), round.NewThreshold(), wi, newKs)
 	if err != nil {
 		return round.WrapError(err, round.PartyID())
 	}
 
-	// 3.
+	// 3. Commit to generated shares -> (C, D)
 	flatVis, err := crypto.FlattenECPoints(vi)
 	if err != nil {
 		return round.WrapError(err, round.PartyID())

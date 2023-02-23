@@ -30,7 +30,7 @@ func (round *round3) Start() *tss.Error {
 	if !round.ReSharingParams().IsOldCommittee() {
 		return nil
 	}
-	round.allOldOK()
+	// round.allOldOK()
 
 	Pi := round.PartyID()
 	i := Pi.Index
@@ -39,8 +39,14 @@ func (round *round3) Start() *tss.Error {
 	for j, Pj := range round.NewParties().IDs() {
 		share := round.temp.NewShares[j]
 		r3msg1 := NewDGRound3Message1(round.temp.sessionId, Pj, round.PartyID(), share)
-		round.temp.dgRound3Message1s[i] = r3msg1
-		round.out <- r3msg1
+		// round.temp.dgRound3Message1s[i] = r3msg1
+		// round.out <- r3msg1
+
+		if i != j { // send share_j directly to each player_j but yourself
+			round.out <- r3msg1
+		} else { // cache own share
+			round.temp.dgRound3Message1s[i] = r3msg1
+		}
 	}
 
 	vDeCmt := round.temp.VD
