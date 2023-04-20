@@ -28,9 +28,8 @@ import (
 )
 
 const (
-	testParticipants          = test.TestParticipants
-	testThreshold             = test.TestThreshold
-	testOldAndNewParticipants = test.TestParticipants
+	testParticipants = test.TestParticipants
+	testThreshold    = test.TestThreshold
 )
 
 func setUp(level string) {
@@ -39,36 +38,57 @@ func setUp(level string) {
 	}
 }
 
-func TestE2EConcurrent(t *testing.T) {
+func TestKeyRotationE2EConcurrent(t *testing.T) {
 	setUp("info")
 
-	// tss.SetCurve(elliptic.P256())
+	_testResharing(t, 0)
+}
 
+func TestKeyResharingWithNewMembersE2EConcurrent(t *testing.T) {
+	setUp("info")
+
+	_testResharing(t, 1)
+}
+
+// func TestKeyResharingWithRemoveMemberE2EConcurrent(t *testing.T) {
+// 	setUp("info")
+//
+// 	_testResharing(t, -1)
+// }
+
+func _testResharing(t *testing.T, newParticipants int) {
 	threshold, newThreshold := testThreshold, testThreshold
 
 	// PHASE: load keygen fixtures
-	firstPartyIdx, extraParties := 0, testOldAndNewParticipants-testThreshold // extra can be 0 to N-first
-	oldKeys, oldPIDs, err := keygen.LoadKeygenTestFixtures(testThreshold+extraParties+firstPartyIdx, firstPartyIdx)
+	oldKeys, oldParties, err := keygen.LoadKeygenTestFixtures(testParticipants, 0)
 	assert.NoError(t, err, "should load keygen fixtures")
 
 	// PHASE: resharing
-	oldP2PCtx := tss.NewPeerContext(oldPIDs)
+	oldCtx := tss.NewPeerContext(oldParties)
 	// init the new parties; re-use the fixture pre-params for speed
 	fixtures, _, err := keygen.LoadKeygenTestFixtures(testParticipants)
 	if err != nil {
 		common.Logger.Info("No test fixtures were found, so the safe primes will be generated from scratch. This may take a while...")
 	}
 
-	newPIDs := tss.GenerateTestPartyIDs(testParticipants - testOldAndNewParticipants)
-
-	for i := 0; i < testOldAndNewParticipants; i++ {
-		newPIDs = append(newPIDs, oldPIDs[i])
+	newParties := tss.SortedPartyIDs{}
+	for i := 0; i < testParticipants; i++ {
+		newParties = append(newParties, oldParties[i])
 	}
 
-	newP2PCtx := tss.NewPeerContext(newPIDs)
-	newPCount := len(newPIDs)
+	if newParticipants > 0 {
+		for i := 0; i < newParticipants; i++ {
+			newParties = append(newParties, tss.GenerateTestPartyIDs(testParticipants + newParticipants)[testParticipants+i])
+		}
+	} else {
+		newParties = newParties[0 : testParticipants+newParticipants]
+	}
 
-	oldCommittee := make([]*LocalParty, 0, len(oldPIDs))
+	newParties = sortParties(newParties, oldParties)
+	newPCount := len(newParties)
+	newCtx := tss.NewPeerContext(newParties)
+
+	oldCommittee := make([]*LocalParty, 0, len(oldParties))
 	newCommittee := make([]*LocalParty, 0, newPCount)
 	bothCommitteesPax := len(oldCommittee) + len(newCommittee)
 
@@ -83,24 +103,27 @@ func TestE2EConcurrent(t *testing.T) {
 	oldCommitteeMap := make(map[*tss.PartyID]*LocalParty)
 
 	// init the old parties first
-	for j, pID := range oldPIDs {
-		params, _ := tss.NewReSharingParameters(tss.S256(), oldP2PCtx, newP2PCtx, pID, testParticipants, threshold, newPCount, newThreshold)
-		P_, _ := NewLocalParty(params, oldKeys[j], outCh, endCh, sessionId) // discard old key data
+	for j, pID := range oldParties {
+		params, _ := tss.NewReSharingParameters(tss.S256(), oldCtx, newCtx, pID, len(oldParties), threshold, newPCount, newThreshold)
+		P_, err := NewLocalParty(params, oldKeys[j], outCh, endCh, sessionId) // discard old key data
+		if err != nil {
+			assert.NoError(t, err, "init the old parties error")
+			return
+		}
 		P := P_.(*LocalParty)
 		oldCommitteeMap[pID] = P
 		oldCommittee = append(oldCommittee, P)
 	}
 
 	// init the new parties
-	for j, pID := range newPIDs {
-		params, _ := tss.NewReSharingParameters(tss.S256(), oldP2PCtx, newP2PCtx, pID, testParticipants, threshold, newPCount, newThreshold)
-
+	for j, pID := range newParties {
+		params, _ := tss.NewReSharingParameters(tss.S256(), oldCtx, newCtx, pID, len(oldParties), threshold, newPCount, newThreshold)
 		var P *LocalParty
 		if p, isOld := oldCommitteeMap[pID]; isOld {
 			P = p
 		} else {
 			save := keygen.NewLocalPartySaveData(newPCount)
-			if j < len(fixtures) && len(newPIDs) <= len(fixtures) {
+			if j < len(fixtures) && len(newParties) <= len(fixtures) {
 				save.LocalPreParams = fixtures[j].LocalPreParams
 			}
 			P_, _ := NewLocalParty(params, save, outCh, endCh, sessionId)
@@ -172,8 +195,8 @@ func TestE2EConcurrent(t *testing.T) {
 				endedOldCommittee++
 			}
 			atomic.AddInt32(&reSharingEnded, 1)
-			if atomic.LoadInt32(&reSharingEnded) == int32(len(oldCommittee)+len(newCommittee)-testOldAndNewParticipants) {
-				assert.Equal(t, len(oldCommittee)-testOldAndNewParticipants, endedOldCommittee)
+			if atomic.LoadInt32(&reSharingEnded) == int32(len(oldCommittee)+len(newCommittee)-testParticipants) {
+				assert.Equal(t, len(oldCommittee)-testParticipants, endedOldCommittee)
 				t.Logf("Resharing done. Reshared %d participants", reSharingEnded)
 
 				// xj tests: BigXj == xj*G
@@ -193,7 +216,7 @@ func TestE2EConcurrent(t *testing.T) {
 
 signing:
 	// PHASE: signing
-	signKeys, signPIDs := newKeys, newPIDs
+	signKeys, signPIDs := newKeys, newParties
 	signP2pCtx := tss.NewPeerContext(signPIDs)
 	signParties := make([]*signing.LocalParty, 0, len(signPIDs))
 
@@ -292,4 +315,28 @@ func TestTooManyParties(t *testing.T) {
 		t.FailNow()
 		return
 	}
+}
+
+func sortParties(parties tss.SortedPartyIDs, oldParties tss.SortedPartyIDs) tss.SortedPartyIDs {
+	newParties := make(tss.SortedPartyIDs, len(parties))
+	copy(newParties, oldParties)
+	index := len(oldParties)
+	for _, party := range parties {
+		if !IsParticipant(party, oldParties) {
+			newParties[index] = party
+			newParties[index].Index = index
+			index++
+		}
+	}
+	return newParties
+}
+
+func IsParticipant(party *tss.PartyID, parties tss.SortedPartyIDs) bool {
+	for _, existingParty := range parties {
+		if party.Id == existingParty.Id {
+			return true
+		}
+	}
+
+	return false
 }
