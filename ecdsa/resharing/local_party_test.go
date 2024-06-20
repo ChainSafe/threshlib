@@ -41,25 +41,51 @@ func setUp(level string) {
 func TestE2EConcurrent(t *testing.T) {
 	setUp("info")
 
+	_testResharing(t, testParticipants, testParticipants, testThreshold)
+}
+
+func TestAddMemberE2EConcurrent(t *testing.T) {
+	setUp("info")
+
+	_testResharing(t, testParticipants, testParticipants+1, testThreshold)
+}
+
+func TestRemoveNonThresholdMemberE2EConcurrent(t *testing.T) {
+	setUp("info")
+
+	_testResharing(t, testParticipants-1, testParticipants-1, testThreshold)
+}
+
+func TestKeyRemoveThresholdMemberE2EConcurrent(t *testing.T) {
+	setUp("info")
+
+	_testResharing(t, 3, 2, 1)
+}
+
+func _testResharing(t *testing.T, oldParticipants, newParticipants, newThreshold int) {
+	setUp("info")
+
 	// tss.SetCurve(elliptic.P256())
 
-	threshold, newThreshold := testThreshold, testThreshold
+	threshold, newThreshold := testThreshold, newThreshold
 
 	// PHASE: load keygen fixtures
-	firstPartyIdx, extraParties := 0, 1 // extra can be 0 to N-first
-	oldKeys, oldPIDs, err := keygen.LoadKeygenTestFixtures(testThreshold+1+extraParties+firstPartyIdx, firstPartyIdx)
+	// firstPartyIdx, _ := 0, 1 // extra can be 0 to N-first
+	oldKeys, oldPIDs, err := keygen.LoadKeygenTestFixtures(oldParticipants, 0)
 	assert.NoError(t, err, "should load keygen fixtures")
 
 	// PHASE: resharing
 	oldP2PCtx := tss.NewPeerContext(oldPIDs)
 	// init the new parties; re-use the fixture pre-params for speed
-	fixtures, _, err := keygen.LoadKeygenTestFixtures(testParticipants)
+	fixtures, _, err := keygen.LoadKeygenTestFixtures(newParticipants)
 	if err != nil {
 		common.Logger.Info("No test fixtures were found, so the safe primes will be generated from scratch. This may take a while...")
 	}
-	newPIDs := tss.GenerateTestPartyIDs(testParticipants)
+	newPIDs := tss.GenerateTestPartyIDs(newParticipants)
 	newP2PCtx := tss.NewPeerContext(newPIDs)
 	newPCount := len(newPIDs)
+
+	fmt.Println("newPCount: ", newPCount)
 
 	oldCommittee := make([]*LocalParty, 0, len(oldPIDs))
 	newCommittee := make([]*LocalParty, 0, newPCount)
@@ -73,21 +99,30 @@ func TestE2EConcurrent(t *testing.T) {
 
 	updater := test.SharedPartyUpdater
 
+	fmt.Println("oldPIDs: ", oldPIDs)
+	fmt.Println("newPIDs: ", newPIDs)
+
 	// init the old parties first
 	for j, pID := range oldPIDs {
-		params, _ := tss.NewReSharingParameters(tss.S256(), oldP2PCtx, newP2PCtx, pID, testParticipants, threshold, newPCount, newThreshold)
-		P_, _ := NewLocalParty(params, oldKeys[j], outCh, endCh, sessionId) // discard old key data
+		params, _ := tss.NewReSharingParameters(tss.S256(), oldP2PCtx, newP2PCtx, pID, oldParticipants, threshold, newPCount, newThreshold)
+		P_, err := NewLocalParty(params, oldKeys[j], outCh, endCh, sessionId) // discard old key data
+		if err != nil {
+			panic(err)
+		}
 		P := P_.(*LocalParty)
 		oldCommittee = append(oldCommittee, P)
 	}
 	// init the new parties
 	for j, pID := range newPIDs {
-		params, _ := tss.NewReSharingParameters(tss.S256(), oldP2PCtx, newP2PCtx, pID, testParticipants, threshold, newPCount, newThreshold)
+		params, _ := tss.NewReSharingParameters(tss.S256(), oldP2PCtx, newP2PCtx, pID, oldParticipants, threshold, newPCount, newThreshold)
 		save := keygen.NewLocalPartySaveData(newPCount)
 		if j < len(fixtures) && len(newPIDs) <= len(fixtures) {
 			save.LocalPreParams = fixtures[j].LocalPreParams
 		}
-		P_, _ := NewLocalParty(params, save, outCh, endCh, sessionId)
+		P_, err := NewLocalParty(params, save, outCh, endCh, sessionId)
+		if err != nil {
+			panic(err)
+		}
 		P := P_.(*LocalParty)
 		newCommittee = append(newCommittee, P)
 	}
@@ -131,7 +166,11 @@ func TestE2EConcurrent(t *testing.T) {
 				}
 			}
 			if !msg.IsToOldCommittee() || msg.IsToOldAndNewCommittees() {
+				fmt.Println("dest: ", len(dest), "newCommittee: ", len(newCommittee))
 				for _, destP := range dest {
+					if destP.Index >= len(newCommittee) {
+						continue
+					}
 					go updater(newCommittee[destP.Index], msg, errCh)
 				}
 			}
